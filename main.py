@@ -1,3 +1,4 @@
+import json
 import os
 import random
 import sqlite3
@@ -6,13 +7,21 @@ from threading import Thread
 from flask import Flask
 import telebot
 
-# --- 1. ВЕБ-СЕРВЕР ДЛЯ ВЕБХУКА / RENDER ---
+# Попытка импорта psycopg2 для работы с PostgreSQL на Render
+try:
+    import psycopg2
+
+    HAS_PG = True
+except ImportError:
+    HAS_PG = False
+
+# --- 1. ВЕБ-СЕРВЕР ДЛЯ РЕНДЕРА (KEEP-ALIVE) ---
 app = Flask('')
 
 
 @app.route('/')
 def home():
-    return 'Мега-Бот запущен и работает с SQLite!'
+    return 'Мега-Бот запущен и работает с Облачной БД!'
 
 
 def run():
@@ -25,62 +34,105 @@ def keep_alive():
     t.start()
 
 
-# --- 2. ИНИЦИАЛИЗАЦИЯ И ИНИЦИАЛИЗАЦИЯ БД ---
-TOKEN = os.environ.get('BOT_TOKEN', 'ВАШ_ТОКЕН_ЕСЛИ_ЛОКАЛЬНО')
+# --- 2. ИНИЦИАЛИЗАЦИЯ И БАЗА ДАННЫХ ---
+TOKEN = os.environ.get('BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
+DATABASE_URL = os.environ.get('DATABASE_URL')
 
-DB_NAME = 'bot_database.db'
+
+def get_db_connection():
+    if DATABASE_URL and HAS_PG:
+        conn = psycopg2.connect(DATABASE_URL)
+        return conn, 'pg'
+    else:
+        conn = sqlite3.connect('bot_database.db')
+        return conn, 'sqlite'
 
 
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn, db_type = get_db_connection()
     c = conn.cursor()
 
-    # Таблица игроков
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS players (
-            user_id INTEGER PRIMARY KEY,
-            name TEXT,
-            coins INTEGER DEFAULT 100,
-            bank INTEGER DEFAULT 0,
-            power INTEGER DEFAULT 1,
-            rep INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'Игрок',
-            last_rob INTEGER DEFAULT 0,
-            last_daily INTEGER DEFAULT 0,
-            daily_streak INTEGER DEFAULT 0,
-            last_work INTEGER DEFAULT 0,
-            last_rep INTEGER DEFAULT 0,
-            last_collect INTEGER DEFAULT 0,
-            last_bank_interest INTEGER DEFAULT 0,
-            businesses TEXT DEFAULT '{"coffee":0, "startup":0, "mining":0}',
-            inventory TEXT DEFAULT '[]',
-            pet TEXT DEFAULT 'None',
-            clan_id INTEGER DEFAULT 0,
-            quests TEXT DEFAULT '{}'
-        )
-    ''')
+    if db_type == 'pg':
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS players (
+                user_id BIGINT PRIMARY KEY,
+                name TEXT,
+                coins BIGINT DEFAULT 100,
+                bank BIGINT DEFAULT 0,
+                power INT DEFAULT 1,
+                rep INT DEFAULT 0,
+                status TEXT DEFAULT 'Игрок',
+                last_rob BIGINT DEFAULT 0,
+                last_daily BIGINT DEFAULT 0,
+                daily_streak INT DEFAULT 0,
+                last_work BIGINT DEFAULT 0,
+                last_rep BIGINT DEFAULT 0,
+                last_collect BIGINT DEFAULT 0,
+                last_bank_interest BIGINT DEFAULT 0,
+                businesses TEXT DEFAULT '{"coffee":0, "startup":0, "mining":0}',
+                inventory TEXT DEFAULT '[]',
+                pet TEXT DEFAULT 'None',
+                clan_id INT DEFAULT 0,
+                quests TEXT DEFAULT '{}'
+            );
 
-    # Таблица кланов
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS clans (
-            clan_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE,
-            owner_id INTEGER,
-            bank INTEGER DEFAULT 0,
-            boss_hp INTEGER DEFAULT 50000
-        )
-    ''')
+            CREATE TABLE IF NOT EXISTS clans (
+                clan_id SERIAL PRIMARY KEY,
+                name TEXT UNIQUE,
+                owner_id BIGINT,
+                bank BIGINT DEFAULT 0,
+                boss_hp INT DEFAULT 50000
+            );
 
-    # Таблица рынка
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS market (
-            lot_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            seller_id INTEGER,
-            item_name TEXT,
-            price INTEGER
-        )
-    ''')
+            CREATE TABLE IF NOT EXISTS market (
+                lot_id SERIAL PRIMARY KEY,
+                seller_id BIGINT,
+                item_name TEXT,
+                price BIGINT
+            );
+        ''')
+    else:
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS players (
+                user_id INTEGER PRIMARY KEY,
+                name TEXT,
+                coins INTEGER DEFAULT 100,
+                bank INTEGER DEFAULT 0,
+                power INTEGER DEFAULT 1,
+                rep INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'Игрок',
+                last_rob INTEGER DEFAULT 0,
+                last_daily INTEGER DEFAULT 0,
+                daily_streak INTEGER DEFAULT 0,
+                last_work INTEGER DEFAULT 0,
+                last_rep INTEGER DEFAULT 0,
+                last_collect INTEGER DEFAULT 0,
+                last_bank_interest INTEGER DEFAULT 0,
+                businesses TEXT DEFAULT '{"coffee":0, "startup":0, "mining":0}',
+                inventory TEXT DEFAULT '[]',
+                pet TEXT DEFAULT 'None',
+                clan_id INTEGER DEFAULT 0,
+                quests TEXT DEFAULT '{}'
+            );
+        ''')
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS clans (
+                clan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE,
+                owner_id INTEGER,
+                bank INTEGER DEFAULT 0,
+                boss_hp INTEGER DEFAULT 50000
+            );
+        ''')
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS market (
+                lot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seller_id INTEGER,
+                item_name TEXT,
+                price INTEGER
+            );
+        ''')
 
     conn.commit()
     conn.close()
@@ -105,17 +157,13 @@ PETS = {
 }
 
 
-# --- ХЕЛПЕРЫ ДЛЯ РАБОТЫ С БД ---
-def get_db_connection():
-    return sqlite3.connect(DB_NAME)
-
-
+# --- УПРАВЛЕНИЕ ИГРОКАМИ В БД ---
 def get_player(user_id, name):
-    import json
-
-    conn = get_db_connection()
+    conn, db_type = get_db_connection()
     c = conn.cursor()
-    c.execute('SELECT * FROM players WHERE user_id = ?', (user_id,))
+    ph = '%s' if db_type == 'pg' else '?'
+
+    c.execute(f'SELECT * FROM players WHERE user_id = {ph}', (user_id,))
     row = c.fetchone()
 
     if not row:
@@ -127,14 +175,14 @@ def get_player(user_id, name):
             'claimed': False,
         })
         c.execute(
-            '''
+            f'''
             INSERT INTO players (user_id, name, quests) 
-            VALUES (?, ?, ?)
+            VALUES ({ph}, {ph}, {ph})
         ''',
             (user_id, name, default_quests),
         )
         conn.commit()
-        c.execute('SELECT * FROM players WHERE user_id = ?', (user_id,))
+        c.execute(f'SELECT * FROM players WHERE user_id = {ph}', (user_id,))
         row = c.fetchone()
 
     conn.close()
@@ -164,18 +212,18 @@ def get_player(user_id, name):
 
 
 def save_player(p):
-    import json
-
-    conn = get_db_connection()
+    conn, db_type = get_db_connection()
     c = conn.cursor()
+    ph = '%s' if db_type == 'pg' else '?'
+
     c.execute(
-        '''
+        f'''
         UPDATE players SET
-            name = ?, coins = ?, bank = ?, power = ?, rep = ?, status = ?,
-            last_rob = ?, last_daily = ?, daily_streak = ?, last_work = ?,
-            last_rep = ?, last_collect = ?, last_bank_interest = ?,
-            businesses = ?, inventory = ?, pet = ?, clan_id = ?, quests = ?
-        WHERE user_id = ?
+            name = {ph}, coins = {ph}, bank = {ph}, power = {ph}, rep = {ph}, status = {ph},
+            last_rob = {ph}, last_daily = {ph}, daily_streak = {ph}, last_work = {ph},
+            last_rep = {ph}, last_collect = {ph}, last_bank_interest = {ph},
+            businesses = {ph}, inventory = {ph}, pet = {ph}, clan_id = {ph}, quests = {ph}
+        WHERE user_id = {ph}
     ''',
         (
             p['name'],
@@ -215,38 +263,41 @@ def is_admin(chat_id, user_id):
 @bot.message_handler(commands=['start', 'help'])
 def start(message):
     text = (
-        '🔥 **МЕГА-ИГРОВОЙ БОТ (ВЕРСИЯ С БД)** 🔥\n\n'
+        '🔥 **МЕГА-ИГРОВОЙ БОТ (С ОБЛАЧНОЙ БД)** 🔥\n\n'
         '🎮 **Экономика и Прогресс:**\n'
         '🔹 `/click` — майнить монеты\n'
-        '🔹 `/balance` — профиль и счет\n'
-        '🔹 `/bank` — управление депозитом в банке (+2% в день)\n'
-        '🔹 `/rob` — попробовать ограбить игрока\n'
+        '🔹 `/balance` — ваш профиль и статусы\n'
         '🔹 `/daily` — ежедневный бонус\n'
-        '🔹 `/work` — пойти на работу\n\n'
-        '🎲 **Телеграм-Азарт:**\n'
-        '🔹 `/dice <ставка>` — бросок кубика\n'
-        '🔹 `/slots <ставка>` — крутить слоты 🎰\n'
-        '🔹 `/darts <ставка>` — дартс 🎯\n\n'
-        '🛡 **Кланы и Банды:**\n'
-        '🔹 `/clan` — инфо о клане / управление\n'
-        '🔹 `/clan_create <имя>` — создать клан (50 000 🪙)\n'
-        '🔹 `/clan_boss` — атаковать босса клана\n\n'
-        '📜 **Квесты и Рынок:**\n'
-        '🔹 `/quests` — ежедневные задания\n'
-        '🔹 `/market` — рынок предметов чата\n'
+        '🔹 `/work` — пойти на работу\n'
+        '🔹 `/rob` — ограбить игрока (ответом)\n\n'
+        '🏦 **Банк и Торговля:**\n'
+        '🔹 `/bank` — счет в банке (+2% в сутки, защита от `/rob`)\n'
+        '🔹 `/deposit <сумма>` — положить монеты в банк\n'
+        '🔹 `/withdraw <сумма>` — снять монеты\n'
+        '🔹 `/market` — рынок предметов\n'
         '🔹 `/sell <предмет> <цена>` — выставить на рынок\n'
-        '🔹 `/buy_item <ID_лота>` — купить с рынка'
+        '🔹 `/buy_item <ID>` — купить предмет\n\n'
+        '🎲 **Анимированные игры Telegram:**\n'
+        '🔹 `/dice <ставка>` — бросок кубика 🎲\n'
+        '🔹 `/slots <ставка>` — анимированные слоты 🎰\n'
+        '🔹 `/darts <ставка>` — дартс 🎯\n\n'
+        '🛡 **Кланы и Квесты:**\n'
+        '🔹 `/clan_create <имя>` — создать клан (50 000 🪙)\n'
+        '🔹 `/clan_boss` — битва с боссом дня\n'
+        '🔹 `/quests` — 3 ежедневных квеста\n\n'
+        '👑 **Админам:**\n'
+        '🔹 `/airdrop <сумма> <код>` — сброс аирдропа'
     )
     bot.reply_to(message, text, parse_mode='Markdown')
 
 
-# --- КЛИКЕР, ПРОФИЛЬ, ГРАБЕЖ ---
+# --- КЛИКЕР И ПРОФИЛЬ ---
 @bot.message_handler(commands=['click'])
 def click(message):
     p = get_player(message.from_user.id, message.from_user.first_name)
     p['coins'] += p['power']
 
-    # Прогресс квеста "Клики"
+    # Фиксация квеста
     today = time.strftime('%Y-%m-%d')
     if p['quests'].get('date') == today:
         p['quests']['clicks'] = p['quests'].get('clicks', 0) + 1
@@ -275,85 +326,17 @@ def balance(message):
         f"🏦 В банке: **{p['bank']}** 🪙\n"
         f"⚡ Сила клика: **{p['power']}**\n"
         f"🔮 Карма: **{p['rep']}**\n"
-        f'🐾 Питомец: **{pet_info}**'
+        f"🐾 Питомец: **{pet_info}**"
     )
     bot.reply_to(message, text, parse_mode='Markdown')
 
 
-@bot.message_handler(commands=['rob'])
-def rob(message):
-    if not message.reply_to_message:
-        bot.reply_to(
-            message, '⚠️ Ответьте этой командой на сообщение жертвы!'
-        )
-        return
-
-    p1 = get_player(message.from_user.id, message.from_user.first_name)
-    p2 = get_player(
-        message.reply_to_message.from_user.id,
-        message.reply_to_message.from_user.first_name,
-    )
-
-    if p1['user_id'] == p2['user_id']:
-        bot.reply_to(message, '❌ Нельзя грабить самого себя!')
-        return
-
-    now = time.time()
-    if now - p1['last_rob'] < 3600:
-        bot.reply_to(message, '⏳ Грабить можно не чаще раза в час!')
-        return
-
-    p1['last_rob'] = now
-
-    if 'Щит от грабежа' in p2['inventory']:
-        p2['inventory'].remove('Щит от грабежа')
-        save_player(p1)
-        save_player(p2)
-        bot.reply_to(
-            message,
-            f"🛡 У **{p2['name']}** сработал **Щит от грабежа**! Ограбление провалено.",
-            parse_mode='Markdown',
-        )
-        return
-
-    if p2['coins'] < 100:
-        bot.reply_to(
-            message,
-            f"💰 У **{p2['name']}** слишком мало монет на руках! (Монеты в банке защищены)",
-            parse_mode='Markdown',
-        )
-        save_player(p1)
-        return
-
-    if random.random() < 0.5:
-        stolen = random.randint(10, int(p2['coins'] * 0.3))
-        p2['coins'] -= stolen
-        p1['coins'] += stolen
-        save_player(p1)
-        save_player(p2)
-        bot.reply_to(
-            message,
-            f"🥷 Успех! Вы украли **{stolen}** 🪙 у **{p2['name']}**!",
-            parse_mode='Markdown',
-        )
-    else:
-        fine = 200
-        p1['coins'] = max(0, p1['coins'] - fine)
-        save_player(p1)
-        bot.reply_to(
-            message,
-            f'🚨 Вас поймала полиция! Вы заплатили штраф **{fine}** 🪙.',
-            parse_mode='Markdown',
-        )
-
-
-# --- 1. БАНК И ДЕПОЗИТЫ ---
+# --- БАНК И ДЕПОЗИТЫ ---
 @bot.message_handler(commands=['bank'])
 def bank_info(message):
     p = get_player(message.from_user.id, message.from_user.first_name)
-
-    # Начисление 2% за каждые 24ч
     now = time.time()
+
     if p['bank'] > 0 and (now - p['last_bank_interest']) >= 86400:
         p['bank'] = int(p['bank'] * 1.02)
         p['last_bank_interest'] = now
@@ -361,10 +344,10 @@ def bank_info(message):
 
     text = (
         f"🏦 **Центральный Банк**\n\n"
-        f"💰 На вашем счете: **{p['bank']}** 🪙\n"
-        f"📈 Начисляемый процент: **+2% в сутки**\n"
-        f"🛡 *Монеты в банке полностью защищены от `/rob`!*\n\n"
-        f"Пополнить: `/deposit <сумма>`\n"
+        f"💰 Счет: **{p['bank']}** 🪙\n"
+        f"📈 Процент: **+2% в сутки**\n"
+        f"🛡 *Деньги в банке защищены от `/rob`!*\n\n"
+        f"Положить: `/deposit <сумма>`\n"
         f"Снять: `/withdraw <сумма>`"
     )
     bot.reply_to(message, text, parse_mode='Markdown')
@@ -376,11 +359,11 @@ def deposit(message):
     try:
         amount = int(message.text.split()[1])
     except Exception:
-        bot.reply_to(message, '⚠️ Укажите сумму. Пример: `/deposit 500`')
+        bot.reply_to(message, '⚠️ Пример: `/deposit 500`')
         return
 
     if amount <= 0 or p['coins'] < amount:
-        bot.reply_to(message, '❌ Недостаточно наличных монет!')
+        bot.reply_to(message, '❌ Недостаточно монет на руках!')
         return
 
     p['coins'] -= amount
@@ -388,7 +371,7 @@ def deposit(message):
     save_player(p)
     bot.reply_to(
         message,
-        f'🏦 Вы положили **{amount}** 🪙 в банк! Баланс банка: **{p["bank"]}** 🪙',
+        f'🏦 Депозит пополнен на **{amount}** 🪙! В банке: **{p["bank"]}** 🪙',
         parse_mode='Markdown',
     )
 
@@ -399,7 +382,7 @@ def withdraw(message):
     try:
         amount = int(message.text.split()[1])
     except Exception:
-        bot.reply_to(message, '⚠️ Укажите сумму. Пример: `/withdraw 500`')
+        bot.reply_to(message, '⚠️ Пример: `/withdraw 500`')
         return
 
     if amount <= 0 or p['bank'] < amount:
@@ -411,14 +394,14 @@ def withdraw(message):
     save_player(p)
     bot.reply_to(
         message,
-        f'💵 Вы сняли **{amount}** 🪙 со счета! На руках: **{p["coins"]}** 🪙',
+        f'💵 Вы сняли **{amount}** 🪙! На руках: **{p["coins"]}** 🪙',
         parse_mode='Markdown',
     )
 
 
-# --- 2. ИГРЫ С АНИМИРОВАННЫМИ КУБИКАМИ TELEGRAM ---
+# --- ИГРЫ TELEGRAM С АНИМАЦИЕЙ ---
 @bot.message_handler(commands=['dice', 'slots', 'darts'])
-def play_tg_dice(message):
+def play_dice(message):
     p = get_player(message.from_user.id, message.from_user.first_name)
     cmd = message.text.split()[0].replace('/', '')
 
@@ -433,353 +416,156 @@ def play_tg_dice(message):
         return
 
     if bet <= 0 or p['coins'] < bet:
-        bot.reply_to(message, '❌ Недостаточно средств!')
+        bot.reply_to(message, '❌ Недостаточно средств на руках!')
         return
 
     p['coins'] -= bet
     save_player(p)
 
     emoji_map = {'dice': '🎲', 'slots': '🎰', 'darts': '🎯'}
-
     msg = bot.send_dice(message.chat.id, emoji=emoji_map[cmd])
-    val = msg.dice.value
-    time.sleep(2)  # Ждем завершения анимации
+    time.sleep(3)
 
+    value = msg.dice.value
+
+    # Расчет выигрыша
     win = 0
-    if cmd == 'dice':
-        if val >= 4:
-            win = int(bet * 1.8)
-    elif cmd == 'darts':
-        if val == 6:  # Попадание в яблочко
-            win = bet * 3
-        elif val >= 4:
-            win = int(bet * 1.3)
-    elif cmd == 'slots':
-        if val in [1, 22, 43, 64]:  # Три одинаковых символа в слотах Telegram
-            win = bet * 7
+    if cmd == 'dice' and value >= 4:
+        win = bet * 2
+    elif cmd == 'slots' and value in [1, 22, 43, 64]:  # Выпадение 3х комбинаций
+        win = bet * 5
+    elif cmd == 'darts' and value == 6:  # Яблочко
+        win = bet * 3
 
     if win > 0:
         p['coins'] += win
-        save_player(p)
         bot.reply_to(
             message,
-            f'🎉 Результат: {val}! Вы выиграли **+{win}** 🪙!',
+            f'🎉 **Победа!** Вы выиграли **{win}** 🪙!',
             parse_mode='Markdown',
         )
     else:
-        bot.reply_to(
-            message,
-            f'Увы, результат: {val}. Вы проиграли {bet} 🪙.',
-            parse_mode='Markdown',
-        )
+        bot.reply_to(message, '😢 Увы, ставка не сыграла.')
 
-
-# --- 3. КЛАНЫ И БАНДЫ ---
-@bot.message_handler(commands=['clan_create'])
-def clan_create(message):
-    p = get_player(message.from_user.id, message.from_user.first_name)
-    if p['clan_id'] != 0:
-        bot.reply_to(message, '❌ Вы уже состоите в клане!')
-        return
-
-    try:
-        clan_name = message.text.split(maxsplit=1)[1]
-    except Exception:
-        bot.reply_to(message, '⚠️ Пример: `/clan_create НазваниеКлана`')
-        return
-
-    if p['coins'] < 50000:
-        bot.reply_to(message, '❌ Создание клана стоит 50 000 🪙!')
-        return
-
-    p['coins'] -= 50000
-
-    conn = get_db_connection()
-    c = conn.cursor()
-    try:
-        c.execute(
-            'INSERT INTO clans (name, owner_id) VALUES (?, ?)',
-            (clan_name, p['user_id']),
-        )
-        clan_id = c.lastrowid
-        conn.commit()
-        p['clan_id'] = clan_id
-        save_player(p)
-        bot.reply_to(
-            message,
-            f'🛡 Клан **{clan_name}** успешно создан!',
-            parse_mode='Markdown',
-        )
-    except sqlite3.IntegrityError:
-        bot.reply_to(message, '❌ Клан с таким названием уже существует!')
-    finally:
-        conn.close()
-
-
-@bot.message_handler(commands=['clan_boss'])
-def clan_boss(message):
-    p = get_player(message.from_user.id, message.from_user.first_name)
-    if p['clan_id'] == 0:
-        bot.reply_to(message, '❌ Вы не состоите в клане!')
-        return
-
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(
-        'SELECT name, boss_hp FROM clans WHERE clan_id = ?', (p['clan_id'],)
-    )
-    clan = c.fetchone()
-
-    if not clan:
-        conn.close()
-        return
-
-    damage = random.randint(100, 500) * p['power']
-    new_hp = max(0, clan[1] - damage)
-
-    if new_hp == 0:
-        c.execute(
-            'UPDATE clans SET boss_hp = 50000 WHERE clan_id = ?',
-            (p['clan_id'],),
-        )
-        p['coins'] += 10000
-        save_player(p)
-        bot.reply_to(
-            message,
-            f"⚔️ Вы нанесли **{damage}** урона и повергли Босса! Награда: **+10 000** 🪙 всем Участникам!",
-            parse_mode='Markdown',
-        )
-    else:
-        c.execute(
-            'UPDATE clans SET boss_hp = ? WHERE clan_id = ?',
-            (new_hp, p['clan_id']),
-        )
-        bot.reply_to(
-            message,
-            f'⚔️ Удар по Клановому Боссу! Нанесено: **{damage}** урона. У Босса осталось HP: **{new_hp}**.',
-            parse_mode='Markdown',
-        )
-
-    conn.commit()
-    conn.close()
-
-
-# --- 4. ЕЖЕДНЕВНЫЕ КВЕСТЫ ---
-@bot.message_handler(commands=['quests'])
-def show_quests(message):
-    p = get_player(message.from_user.id, message.from_user.first_name)
-    today = time.strftime('%Y-%m-%d')
-
-    q = p['quests']
-    if q.get('date') != today:
-        q = {'date': today, 'clicks': 0, 'duels': 0, 'feed': 0, 'claimed': False}
-        p['quests'] = q
-        save_player(p)
-
-    status_c = '✅' if q['clicks'] >= 50 else f"{q['clicks']}/50"
-    status_d = '✅' if q['duels'] >= 2 else f"{q['duels']}/2"
-    status_f = '✅' if q['feed'] >= 1 else f"{q['feed']}/1"
-
-    text = (
-        f"📜 **Ежедневные квесты для {p['name']}:**\n\n"
-        f"1. Сделать 50 кликов (`/click`): [{status_c}]\n"
-        f"2. Сыграть 2 дуэли (`/duel`): [{status_d}]\n"
-        f"3. Покормить питомца (`/feed`): [{status_f}]\n\n"
-    )
-
-    if q['clicks'] >= 50 and q['duels'] >= 2 and q['feed'] >= 1:
-        if not q['claimed']:
-            p['coins'] += 3000
-            q['claimed'] = True
-            save_player(p)
-            text += "🎉 **Поздравляем! Вы получили бонус +3000 🪙 за выполнение всех квестов!**"
-        else:
-            text += '🎁 Награда за сегодня уже получена!'
-    else:
-        text += '💡 Выполните все задания, чтобы получить 3 000 🪙!'
-
-    bot.reply_to(message, text, parse_mode='Markdown')
-
-
-# --- 5. РЫНОК И ТОРГОВЛЯ ---
-@bot.message_handler(commands=['sell'])
-def sell_item(message):
-    p = get_player(message.from_user.id, message.from_user.first_name)
-    args = message.text.split(maxsplit=2)
-
-    if len(args) < 3:
-        bot.reply_to(
-            message,
-            '⚠️ Формат: `/sell <название_предмета> <цена>`',
-            parse_mode='Markdown',
-        )
-        return
-
-    item_name = args[1]
-    try:
-        price = int(args[2])
-    except ValueError:
-        bot.reply_to(message, '❌ Цена должна быть числом!')
-        return
-
-    if item_name not in p['inventory']:
-        bot.reply_to(message, '❌ У вас нет этого предмета в инвентаре!')
-        return
-
-    p['inventory'].remove(item_name)
     save_player(p)
 
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(
-        'INSERT INTO market (seller_id, item_name, price) VALUES (?, ?, ?)',
-        (p['user_id'], item_name, price),
-    )
-    conn.commit()
-    conn.close()
 
-    bot.reply_to(
-        message,
-        f'🏪 Предмет **{item_name}** выставлен на рынок за **{price}** 🪙!',
-        parse_mode='Markdown',
-    )
-
-
-@bot.message_handler(commands=['market'])
-def market_list(message):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('SELECT lot_id, item_name, price FROM market LIMIT 10')
-    lots = c.fetchall()
-    conn.close()
-
-    if not lots:
-        bot.reply_to(message, '🏪 Рынок пока пуст!')
-        return
-
-    text = '🏪 **Рынок предметов:**\n\n'
-    for lot in lots:
-        text += f"📦 Лот `#{lot[0]}`: **{lot[1]}** — Цена: **{lot[2]}** 🪙\n"
-    text += '\nКупить предмет: `/buy_item <ID_лота>`'
-
-    bot.reply_to(message, text, parse_mode='Markdown')
-
-
-@bot.message_handler(commands=['buy_item'])
-def buy_item(message):
-    p = get_player(message.from_user.id, message.from_user.first_name)
-    try:
-        lot_id = int(message.text.split()[1])
-    except Exception:
-        bot.reply_to(message, '⚠️ Укажите ID лота! Пример: `/buy_item 1`')
-        return
-
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(
-        'SELECT lot_id, seller_id, item_name, price FROM market WHERE lot_id = ?',
-        (lot_id,),
-    )
-    lot = c.fetchone()
-
-    if not lot:
-        conn.close()
-        bot.reply_to(message, '❌ Лот не найден!')
-        return
-
-    seller_id, item_name, price = lot[1], lot[2], lot[3]
-
-    if p['coins'] < price:
-        conn.close()
-        bot.reply_to(message, '❌ Недостаточно средств!')
-        return
-
-    # Транзакция
-    p['coins'] -= price
-    p['inventory'].append(item_name)
-    save_player(p)
-
-    seller = get_player(seller_id, 'Продавец')
-    seller['coins'] += price
-    save_player(seller)
-
-    c.execute('DELETE FROM market WHERE lot_id = ?', (lot_id,))
-    conn.commit()
-    conn.close()
-
-    bot.reply_to(
-        message,
-        f'🎉 Вы успешно купили **{item_name}** за **{price}** 🪙!',
-        parse_mode='Markdown',
-    )
-
-
-# --- ДУЭЛИ И ПРОЧИЕ СЕКЦИИ ---
-@bot.message_handler(commands=['duel'])
-def duel(message):
+# --- ОГРАБЛЕНИЕ ---
+@bot.message_handler(commands=['rob'])
+def rob(message):
     if not message.reply_to_message:
         bot.reply_to(
-            message, '⚠️ Пишите `/duel` ответом на сообщение оппонента!'
+            message,
+            '⚠️ Ответьте этой командой на сообщение игрока, которого хотите ограбить!',
         )
         return
 
-    p1 = get_player(message.from_user.id, message.from_user.first_name)
-    p2 = get_player(
-        message.reply_to_message.from_user.id,
-        message.reply_to_message.from_user.first_name,
-    )
+    thief = get_player(message.from_user.id, message.from_user.first_name)
+    target_user = message.reply_to_message.from_user
+    victim = get_player(target_user.id, target_user.first_name)
 
-    if p1['user_id'] == p2['user_id']:
-        return
-
-    winner, loser = (
-        (p1, p2) if random.choice([True, False]) else (p2, p1)
-    )
-    prize = 150
-
-    winner['coins'] += prize
-
-    # Фиксация квеста
-    today = time.strftime('%Y-%m-%d')
-    if p1['quests'].get('date') == today:
-        p1['quests']['duels'] = p1['quests'].get('duels', 0) + 1
-    if p2['quests'].get('date') == today:
-        p2['quests']['duels'] = p2['quests'].get('duels', 0) + 1
-
-    save_player(p1)
-    save_player(p2)
-
-    bot.reply_to(
-        message,
-        f"⚔️ **ДУЭЛЬ!**\n🏆 **{winner['name']}** одолел **{loser['name']}** и забрал **+{prize}** 🪙!",
-        parse_mode='Markdown',
-    )
-
-
-@bot.message_handler(commands=['feed'])
-def feed(message):
-    p = get_player(message.from_user.id, message.from_user.first_name)
-    if not p['pet']:
-        bot.reply_to(message, '❌ У вас нет питомца!')
-        return
-
-    cost = PETS[p['pet']['type']]['feed_cost']
-    if p['coins'] >= cost:
-        p['coins'] -= cost
-        p['pet']['fed_time'] = time.time()
-
-        today = time.strftime('%Y-%m-%d')
-        if p['quests'].get('date') == today:
-            p['quests']['feed'] = p['quests'].get('feed', 0) + 1
-
-        save_player(p)
+    now = time.time()
+    if now - thief['last_rob'] < 3600:
+        wait = int((3600 - (now - thief['last_rob'])) / 60)
         bot.reply_to(
-            message, f'🍖 Вы покормили питомца за {cost} 🪙! Бонусы активны.'
+            message, f'⏳ Грабить можно раз в час! Подождите {wait} мин.'
+        )
+        return
+
+    if victim['coins'] < 100:
+        bot.reply_to(message, '❌ У этого игрока слишком мало денег на руках!')
+        return
+
+    thief['last_rob'] = now
+
+    if random.random() < 0.5:
+        stolen = random.randint(1, int(victim['coins'] * 0.4))
+        victim['coins'] -= stolen
+        thief['coins'] += stolen
+        bot.reply_to(
+            message,
+            f"🥷 Успех! Вы украли **{stolen}** 🪙 у {victim['name']}!",
+            parse_mode='Markdown',
         )
     else:
-        bot.reply_to(message, f'❌ Не хватает {cost} 🪙 на кормежку!')
+        fine = random.randint(50, 200)
+        thief['coins'] = max(0, thief['coins'] - fine)
+        bot.reply_to(
+            message,
+            f'🚔 Вас поймали! Штраф за попытку ограбления: **{fine}** 🪙',
+            parse_mode='Markdown',
+        )
+
+    save_player(thief)
+    save_player(victim)
 
 
-# --- ЗАПУСК БОТА ---
-keep_alive()
-bot.polling(none_stop=True)
+# --- АИРДРОП (АДМИН) ---
+@bot.message_handler(commands=['airdrop'])
+def airdrop(message):
+    if not is_admin(message.chat.id, message.from_user.id):
+        bot.reply_to(message, '❌ Эта команда доступна только админам!')
+        return
+
+    try:
+        _, reward, code = message.text.split()
+        global airdrop_active
+        airdrop_active = {
+            'active': True,
+            'code': code,
+            'reward': int(reward),
+        }
+        bot.send_message(
+            message.chat.id,
+            f'📦 **СБРОШЕН АИРДРОП!**\n\n Награда: **{reward}** 🪙\n Напишите `/claim <code>`, чтобы забрать!',
+            parse_mode='Markdown',
+        )
+    except Exception:
+        bot.reply_to(message, '⚠️ Использование: `/airdrop 1000 секрет`')
+
+
+@bot.message_handler(commands=['claim'])
+def claim_airdrop(message):
+    global airdrop_active
+    if not airdrop_active['active']:
+        bot.reply_to(message, '❌ Сейчас нет активного аирдропа.')
+        return
+
+    try:
+        code = message.text.split()[1]
+        if code == airdrop_active['code']:
+            p = get_player(message.from_user.id, message.from_user.first_name)
+            p['coins'] += airdrop_active['reward']
+            save_player(p)
+
+            bot.reply_to(
+                message,
+                f"🎁 Вы успели забрали Аирдроп на **{airdrop_active['reward']}** 🪙!",
+                parse_mode='Markdown',
+            )
+            airdrop_active['active'] = False
+        else:
+            bot.reply_to(message, '❌ Неверный код!')
+    except Exception:
+        bot.reply_to(message, '⚠️ Введите код: `/claim <code>`')
+
+
+# --- БЕЗОПАСНЫЙ ЗАПУСК ПОЛЛИНГА С АВТОРЕСТАРТОМ ---
+if __name__ == '__main__':
+    keep_alive()
+
+    # Сброс вебхука для предотвращения ошибки 409
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+    except Exception:
+        pass
+
+    print('🚀 Бот успешно запущен!')
+
+    while True:
+        try:
+            bot.polling(none_stop=True, interval=0, timeout=20)
+        except Exception as e:
+            print(f'⚠️ Ошибка сети или конфликта, автопереподключение: {e}')
+            time.sleep(3)
