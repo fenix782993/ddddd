@@ -32,7 +32,7 @@ TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_TOKEN_HERE')
 bot = telebot.TeleBot(TOKEN)
 
 # Список ID админов (добавь свой Telegram ID через запятую)
-ADMIN_IDS = [123456789]
+ADMIN_IDS = [810823857]
 
 
 def get_db_connection():
