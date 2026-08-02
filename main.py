@@ -33,7 +33,7 @@ def keep_alive():
 # ==========================================
 # 2. НАСТРОЙКИ И БАЗА ДАННЫХ
 # ==========================================
-TOKEN = os.environ.get('BOT_TOKEN', 'ТВОЙ_ТОКЕН_ЕСЛИ_ТЕСТИРУЕШЬ_ЛОКАЛЬНО')
+TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 
 # ID Главного Администратора
@@ -69,7 +69,7 @@ def init_db():
             inventory TEXT DEFAULT '[]',
             eq_weapon TEXT DEFAULT 'None',
             eq_armor TEXT DEFAULT 'None',
-            pet TEXT DEFAULT 'None',
+            pet TEXT DEFAULT '{"name": "None", "level": 0, "fed": 0}',
             businesses TEXT DEFAULT '{"coffee":0, "farm":0, "mine":0}',
             last_feed INTEGER DEFAULT 0,
             last_wheel INTEGER DEFAULT 0,
@@ -77,6 +77,16 @@ def init_db():
             last_bank_interest INTEGER DEFAULT 0,
             bp_level INTEGER DEFAULT 1,
             bp_exp INTEGER DEFAULT 0
+        )
+    ''')
+
+    # Таблица P2P Рынка
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS market (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            seller_id INTEGER,
+            item_name TEXT,
+            price INTEGER
         )
     ''')
 
@@ -116,7 +126,7 @@ init_db()
 
 
 # ==========================================
-# 3. ВПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И ОП
+# 3. ВПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ==========================================
 def check_sub(user_id):
     """Проверка обязательной подписки на канал"""
@@ -131,10 +141,11 @@ def get_sub_keyboard():
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
         InlineKeyboardButton(
-            '📢 Подписаться на канал', url=f'https://t.me/{REQUIRED_CHANNEL[1:]}'
+            '🔴 📢 Подписаться на канал',
+            url=f'https://t.me/{REQUIRED_CHANNEL[1:]}',
         ),
         InlineKeyboardButton(
-            '✅ Я подписался / Проверить', callback_data='check_subscription'
+            '🟩 ✅ Проверить подписку', callback_data='check_subscription'
         ),
     )
     return kb
@@ -179,6 +190,12 @@ def get_player(user_id, name):
 
     conn.close()
 
+    pet_data = (
+        json.loads(row[13])
+        if row[13] and row[13] != 'None'
+        else {'name': 'None', 'level': 0, 'fed': 0}
+    )
+
     return {
         'user_id': row[0],
         'name': row[1],
@@ -193,7 +210,7 @@ def get_player(user_id, name):
         'inventory': json.loads(row[10]),
         'eq_weapon': row[11],
         'eq_armor': row[12],
-        'pet': json.loads(row[13]) if row[13] != 'None' else None,
+        'pet': pet_data,
         'businesses': json.loads(row[14]),
         'last_feed': row[15],
         'last_wheel': row[16],
@@ -228,7 +245,7 @@ def save_player(p):
             json.dumps(p['inventory']),
             p['eq_weapon'],
             p['eq_armor'],
-            json.dumps(p['pet']) if p['pet'] else 'None',
+            json.dumps(p['pet']),
             json.dumps(p['businesses']),
             p['last_feed'],
             p['last_wheel'],
@@ -244,31 +261,38 @@ def save_player(p):
 
 
 # ==========================================
-# 4. КЛАВИАТУРЫ ИНТЕРФЕЙСА
+# 4. ЦВЕТНОЕ ГЛАВНОЕ МЕНЮ
 # ==========================================
 def main_menu_kb(user_id):
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
-        InlineKeyboardButton('⚡ Майнить (Клик)', callback_data='menu_click'),
-        InlineKeyboardButton('👤 Профиль & Шмот', callback_data='menu_profile'),
-        InlineKeyboardButton('💼 Бизнес-Империя', callback_data='menu_biz'),
-        InlineKeyboardButton('🏦 Банк и Сейф', callback_data='menu_bank'),
-        InlineKeyboardButton('💣 Игра "Мины"', callback_data='start_mines'),
-        InlineKeyboardButton('🎲 Кубик Удачи', callback_data='game_dice_anim'),
-        InlineKeyboardButton('⚔️ PVP & Босс', callback_data='menu_pvp'),
-        InlineKeyboardButton('🏆 Топ Богачей', callback_data='menu_top'),
-        InlineKeyboardButton('🎁 Ввести Промокод', callback_data='menu_promo'),
+        InlineKeyboardButton('🟨 ⚡ Майнить (Клик)', callback_data='menu_click'),
+        InlineKeyboardButton(
+            '🟦 👤 Профиль & Шмот', callback_data='menu_profile'
+        ),
+        InlineKeyboardButton('🟩 💼 Бизнесы', callback_data='menu_biz'),
+        InlineKeyboardButton('🟦 🏦 Банк и Сейф', callback_data='menu_bank'),
+        InlineKeyboardButton('🟥 💣 Игра "Мины"', callback_data='start_mines'),
+        InlineKeyboardButton('🟧 🎲 Кубик Удачи', callback_data='game_dice_anim'),
+        InlineKeyboardButton(
+            '🟪 📦 Лутбоксы/Кейсы', callback_data='menu_cases'
+        ),
+        InlineKeyboardButton('🟧 🐶 Мой Питомец', callback_data='menu_pet'),
+        InlineKeyboardButton('🟥 ⚔️ PVP & Босс', callback_data='menu_pvp'),
+        InlineKeyboardButton('🟨 🛒 P2P Рынок', callback_data='menu_market'),
+        InlineKeyboardButton('🟪 🏆 Топ Богачей', callback_data='menu_top'),
+        InlineKeyboardButton('🟩 🎁 Ввести Промокод', callback_data='menu_promo'),
     )
     if user_id in ADMIN_IDS:
         kb.add(
-            InlineKeyboardButton('👑 АДМИН-ПАНЕЛЬ', callback_data='menu_admin')
+            InlineKeyboardButton('🟥 👑 АДМИН-ПАНЕЛЬ', callback_data='menu_admin')
         )
     return kb
 
 
 def back_kb():
     return InlineKeyboardMarkup().add(
-        InlineKeyboardButton('⬅️ В Главное Меню', callback_data='menu_main')
+        InlineKeyboardButton('⬛ ⬅️ В Главное Меню', callback_data='menu_main')
     )
 
 
@@ -282,7 +306,6 @@ def start_cmd(message):
         bot.reply_to(message, '❌ Ваш аккаунт заблокирован!')
         return
 
-    # Проверка обязательной подписки
     if not check_sub(message.from_user.id):
         bot.send_message(
             message.chat.id,
@@ -292,7 +315,6 @@ def start_cmd(message):
         )
         return
 
-    # Расчет офлайн дохода от бизнесов
     now = time.time()
     hours_passed = int((now - p['last_collect']) // 3600)
     income_per_hour = (
@@ -331,7 +353,6 @@ def callback_handler(call):
         bot.answer_callback_query(call.id, '❌ Доступ ограничен!', show_alert=True)
         return
 
-    # Проверка подписки
     if call.data == 'check_subscription':
         if check_sub(call.from_user.id):
             bot.answer_callback_query(call.id, '✅ Подписка подтверждена!')
@@ -367,20 +388,21 @@ def callback_handler(call):
             parse_mode='Markdown',
         )
 
-    # --- ⚡ КЛИКЕР С КРИТАМИ ---
+    # --- 🟨 КЛИКЕР С КРИТАМИ И БОНУСОМ ПИТОМЦА ---
     elif call.data == 'menu_click':
         mult = 1.0 + (p['prestige'] * 0.5)
         weapon_bonus = 15 if p['eq_weapon'] == '🔥 Огненный клинок' else 0
+        pet_bonus = 5 if p['pet']['name'] != 'None' else 0
 
-        # Шанс 15% на КРИТИЧЕСКИЙ КЛИК (x3)
         is_crit = random.random() <= 0.15
         crit_mult = 3.0 if is_crit else 1.0
 
-        earned = int(((p['power'] + weapon_bonus) * mult) * crit_mult)
+        earned = int(
+            ((p['power'] + weapon_bonus + pet_bonus) * mult) * crit_mult
+        )
         p['coins'] += earned
         p['exp'] += 1
 
-        # Подъем уровня
         max_exp = p['level'] * 25
         if p['exp'] >= max_exp:
             p['level'] += 1
@@ -394,7 +416,184 @@ def callback_handler(call):
         )
         bot.answer_callback_query(call.id, msg_text)
 
-    # --- 👤 ПРОФИЛЬ И ИНВЕНТАРЬ ---
+    # --- 🟪 КЕЙСЫ (LOOTBOXES) ---
+    elif call.data == 'menu_cases':
+        kb = InlineKeyboardMarkup(row_width=1)
+        kb.add(
+            InlineKeyboardButton(
+                '🟫 Бронзовый Кейс (1 000 🪙)', callback_data='open_case_bronze'
+            ),
+            InlineKeyboardButton(
+                '⬜ Серебряный Кейс (5 000 🪙)', callback_data='open_case_silver'
+            ),
+            InlineKeyboardButton(
+                '🟨 Легендарный Кейс (25 000 🪙)', callback_data='open_case_gold'
+            ),
+            InlineKeyboardButton('⬛ ⬅️ Назад', callback_data='menu_main'),
+        )
+        bot.edit_message_text(
+            '🟪 **МАГАЗИН КЕЙСОВ**\nИспытайте удачу и выбейте монетный куш или'
+            ' редкое оружие!',
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb,
+            parse_mode='Markdown',
+        )
+
+    elif call.data.startswith('open_case_'):
+        case_type = call.data.split('_')[2]
+        costs = {'bronze': 1000, 'silver': 5000, 'gold': 25000}
+        cost = costs[case_type]
+
+        if p['coins'] < cost:
+            bot.answer_callback_query(
+                call.id, '❌ Недостаточно монет!', show_alert=True
+            )
+            return
+
+        p['coins'] -= cost
+        rand = random.randint(1, 100)
+
+        if rand <= 60:
+            win = int(cost * random.uniform(0.5, 1.5))
+            p['coins'] += win
+            msg = f'🪙 Вы выиграли **{win} 🪙**!'
+        elif rand <= 90:
+            if '🔥 Огненный клинок' not in p['inventory']:
+                p['inventory'].append('🔥 Огненный клинок')
+            msg = '⚔️ Вы выбили **🔥 Огненный клинок**!'
+        else:
+            win = cost * 3
+            p['coins'] += win
+            msg = f'💥 ДЖЕКПОТ! Вы выиграли **{win} 🪙**!'
+
+        save_player(p)
+        bot.edit_message_text(
+            f'📦 **Открытие кейса...**\n\n{msg}',
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=back_kb(),
+            parse_mode='Markdown',
+        )
+
+    # --- 🟧 ПИТОМЕЦ ---
+    elif call.data == 'menu_pet':
+        kb = InlineKeyboardMarkup(row_width=1)
+        if p['pet']['name'] == 'None':
+            kb.add(
+                InlineKeyboardButton(
+                    '🟩 Купить Дракончика (10 000 🪙)', callback_data='buy_pet_dragon'
+                )
+            )
+        else:
+            kb.add(
+                InlineKeyboardButton(
+                    '🟨 Накормить питомца (500 🪙)', callback_data='feed_pet'
+                )
+            )
+
+        kb.add(InlineKeyboardButton('⬛ ⬅️ Назад', callback_data='menu_main'))
+
+        pet_name = (
+            p['pet']['name']
+            if p['pet']['name'] != 'None'
+            else 'Отсутствует'
+        )
+        text = (
+            f'🟧 **МОЙ ПИТОМЕЦ**\n'
+            f'━━━━━━━━━━━━━━━━━━━\n'
+            f'Питомец: **{pet_name}**\n'
+            f'💡 *Питомец даёт +5 ко всем кликам!*'
+        )
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb,
+            parse_mode='Markdown',
+        )
+
+    elif call.data == 'buy_pet_dragon':
+        if p['coins'] >= 10000:
+            p['coins'] -= 10000
+            p['pet'] = {'name': '🐲 Дракончик', 'level': 1, 'fed': time.time()}
+            save_player(p)
+            bot.answer_callback_query(
+                call.id, '🎉 Вы приобрели Дракончика!', show_alert=True
+            )
+        else:
+            bot.answer_callback_query(call.id, '❌ Недостаточно монет!')
+
+    elif call.data == 'feed_pet':
+        if p['coins'] >= 500:
+            p['coins'] -= 500
+            p['pet']['fed'] = time.time()
+            save_player(p)
+            bot.answer_callback_query(
+                call.id, '🍖 Питомец сыт и доволен!', show_alert=True
+            )
+        else:
+            bot.answer_callback_query(call.id, '❌ Недостаточно монет!')
+
+    # --- 🟨 P2P РЫНОК ---
+    elif call.data == 'menu_market':
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            'SELECT id, item_name, price FROM market ORDER BY id DESC LIMIT 5'
+        )
+        items = c.fetchall()
+        conn.close()
+
+        kb = InlineKeyboardMarkup(row_width=1)
+        for it in items:
+            kb.add(
+                InlineKeyboardButton(
+                    f'🟩 Купить {it[1]} за {it[2]} 🪙',
+                    callback_data=f'buy_m_{it[0]}',
+                )
+            )
+
+        kb.add(
+            InlineKeyboardButton(
+                '🟦 Выставить предмет на продажу', callback_data='sell_market'
+            )
+        )
+        kb.add(InlineKeyboardButton('⬛ ⬅️ Назад', callback_data='menu_main'))
+
+        bot.edit_message_text(
+            '🟨 **P2P ТОРГОВАЯ ПЛОЩАДКА**\nПокупайте редкие предметы у других'
+            ' игроков!',
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb,
+            parse_mode='Markdown',
+        )
+
+    elif call.data == 'sell_market':
+        if '🔥 Огненный клинок' in p['inventory']:
+            p['inventory'].remove('🔥 Огненный клинок')
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute(
+                'INSERT INTO market (seller_id, item_name, price) VALUES (?,'
+                ' ?, ?)',
+                (p['user_id'], '🔥 Огненный клинок', 15000),
+            )
+            conn.commit()
+            conn.close()
+            save_player(p)
+            bot.answer_callback_query(
+                call.id,
+                '✅ Предмет выставлен на рынок за 15 000 🪙!',
+                show_alert=True,
+            )
+        else:
+            bot.answer_callback_query(
+                call.id, '❌ У вас нет предметов для продажи!', show_alert=True
+            )
+
+    # --- 🟦 ПРОФИЛЬ И ИНВЕНТАРЬ ---
     elif call.data == 'menu_profile':
         title = get_user_title(p['level'])
         max_exp = p['level'] * 25
@@ -420,7 +619,7 @@ def callback_handler(call):
                 )
             )
 
-        kb.add(InlineKeyboardButton('⬅️ Назад', callback_data='menu_main'))
+        kb.add(InlineKeyboardButton('⬛ ⬅️ Назад', callback_data='menu_main'))
 
         text = (
             f'👤 **ПРОФИЛЬ ИГРОКА:**\n'
@@ -432,7 +631,7 @@ def callback_handler(call):
             f'⚡ Сила клика: **{p["power"]}** | 💎 Престиж:'
             f' **x{1 + p["prestige"] * 0.5}**\n\n'
             f'🗡 Оружие: **{p["eq_weapon"]}**\n'
-            f'🛡 Броня: **{p["eq_armor"]}**\n\n'
+            f'🐶 Питомец: **{p["pet"]["name"]}**\n\n'
             f'⭐ Уровень: **{p["level"]}**\n'
             f'[`{exp_bar}`] {p["exp"]}/{max_exp} EXP'
         )
@@ -459,12 +658,11 @@ def callback_handler(call):
         save_player(p)
         bot.answer_callback_query(
             call.id,
-            '🎉 Вы совершили ПЕРЕРОЖДЕНИЕ! Получен постоянный множитель ко всем'
-            ' доходам!',
+            '🎉 Вы совершили ПЕРЕРОЖДЕНИЕ! Получен множитель к доходам!',
             show_alert=True,
         )
 
-    # --- 💣 ИНТЕРАКТИВНЫЕ МИНЫ (MINESWEEPER) ---
+    # --- 🟥 МИНЫ ---
     elif call.data == 'start_mines':
         if p['coins'] < 200:
             bot.answer_callback_query(
@@ -533,7 +731,7 @@ def callback_handler(call):
                 parse_mode='Markdown',
             )
 
-    # --- 🎲 АНИМИРОВАННЫЕ КОСТИ ---
+    # --- 🟧 АНИМИРОВАННЫЕ КОСТИ ---
     elif call.data == 'game_dice_anim':
         if p['coins'] < 100:
             bot.answer_callback_query(
@@ -564,7 +762,7 @@ def callback_handler(call):
                 reply_markup=back_kb(),
             )
 
-    # --- 💼 БИЗНЕС-ИМПЕРИЯ ---
+    # --- 🟩 БИЗНЕCЫ ---
     elif call.data == 'menu_biz':
         kb = InlineKeyboardMarkup(row_width=1)
         kb.add(
@@ -577,7 +775,7 @@ def callback_handler(call):
             InlineKeyboardButton(
                 '⛏️ Купить Шахту (50 000 🪙)', callback_data='buy_mine'
             ),
-            InlineKeyboardButton('⬅️ Назад', callback_data='menu_main'),
+            InlineKeyboardButton('⬛ ⬅️ Назад', callback_data='menu_main'),
         )
         inc = (
             (p['businesses']['coffee'] * 100)
@@ -619,7 +817,7 @@ def callback_handler(call):
                 call.id, '❌ Недостаточно монет!', show_alert=True
             )
 
-    # --- 🏦 БАНК И СЕЙФ ---
+    # --- 🟦 БАНК И СЕЙФ ---
     elif call.data == 'menu_bank':
         kb = InlineKeyboardMarkup(row_width=2)
         kb.add(
@@ -627,7 +825,7 @@ def callback_handler(call):
             InlineKeyboardButton('📤 Из Банка', callback_data='bank_with'),
             InlineKeyboardButton('🔒 В Сейф', callback_data='safe_dep'),
             InlineKeyboardButton('🔓 Из Сейфа', callback_data='safe_with'),
-            InlineKeyboardButton('⬅️ Назад', callback_data='menu_main'),
+            InlineKeyboardButton('⬛ ⬅️ Назад', callback_data='menu_main'),
         )
         text = (
             f'🏦 **ФИНАНСОВЫЙ ЦЕНТР**\n'
@@ -661,24 +859,50 @@ def callback_handler(call):
         save_player(p)
         bot.answer_callback_query(call.id, '✅ Операция выполнена!')
 
-    # --- ⚔️ PVP И БОСС ---
+    # --- 🟥 PVP, ДУЭЛИ И БОСС ---
     elif call.data == 'menu_pvp':
         kb = InlineKeyboardMarkup(row_width=1)
         kb.add(
             InlineKeyboardButton(
+                '⚔️ Поединок Дуэль на 1 000 🪙', callback_data='pvp_duel'
+            ),
+            InlineKeyboardButton(
                 '🥷 Ограбить случайного игрока', callback_data='rob_player'
             ),
             InlineKeyboardButton(
-                '👹 Атаковать Босса', callback_data='menu_boss'
+                '👹 Атаковать Мирового Босса', callback_data='menu_boss'
             ),
-            InlineKeyboardButton('⬅️ Назад', callback_data='menu_main'),
+            InlineKeyboardButton('⬛ ⬅️ Назад', callback_data='menu_main'),
         )
         bot.edit_message_text(
-            '⚔️ **PVP & БОИ**\nГрабите незащищенные монеты игроков или'
-            ' объединяйтесь против Босса!',
+            '⚔️ **PVP АРЕНА И СРАЖЕНИЯ**\nСражайтесь на дуэлях, грабьте'
+            ' незащищенные монеты или бейте Босса!',
             call.message.chat.id,
             call.message.message_id,
             reply_markup=kb,
+            parse_mode='Markdown',
+        )
+
+    elif call.data == 'pvp_duel':
+        if p['coins'] < 1000:
+            bot.answer_callback_query(
+                call.id, '❌ Для дуэли нужно 1 000 монет!', show_alert=True
+            )
+            return
+
+        if random.choice([True, False]):
+            p['coins'] += 1000
+            msg = '🎉 **ВЫ ПОБЕДИЛИ В ДУЭЛИ! +1 000 🪙**'
+        else:
+            p['coins'] -= 1000
+            msg = '📉 **ВЫ ПРОИГРАЛИ ДУЭЛЬ! -1 000 🪙**'
+
+        save_player(p)
+        bot.edit_message_text(
+            msg,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=back_kb(),
             parse_mode='Markdown',
         )
 
@@ -738,13 +962,13 @@ def callback_handler(call):
             InlineKeyboardButton(
                 '💥 Ударить Босса!', callback_data='attack_boss'
             ),
-            InlineKeyboardButton('⬅️ Назад', callback_data='menu_main'),
+            InlineKeyboardButton('⬛ ⬅️ Назад', callback_data='menu_main'),
         )
         bot.edit_message_text(
-            f'👹 **МИРОВОЙ КЛАНОВЫЙ БОСС**\n'
+            f'👹 **МИРОВОЙ БОСС**\n'
             f'━━━━━━━━━━━━━━━━━━━\n'
             f'❤️ HP: [`{hp_bar}`] **{pct}%** ({hp}/{max_hp})\n\n'
-            f'💥 Казна в **50 000 🪙** разделится между всеми участниками!',
+            f'💥 Награда в **50 000 🪙** разделится между всеми участниками!',
             call.message.chat.id,
             call.message.message_id,
             reply_markup=kb,
@@ -796,7 +1020,7 @@ def callback_handler(call):
         conn.close()
         bot.answer_callback_query(call.id, f'💥 Нанесено -{dmg} урона!')
 
-    # --- 🏆 ТОП БОГАЧЕЙ ---
+    # --- 🟪 ТОП БОГАЧЕЙ ---
     elif call.data == 'menu_top':
         conn = get_db_connection()
         c = conn.cursor()
@@ -806,7 +1030,7 @@ def callback_handler(call):
         rows = c.fetchall()
         conn.close()
 
-        text = '🏆 **ТОП-10 САМЫХ БОГАТЫХ ИГРОКОВ:**\n\n'
+        text = '🟪 **ТОП-10 САМЫХ БОГАТЫХ ИГРОКОВ:**\n\n'
         for i, r in enumerate(rows, 1):
             text += f'{i}. {r[0]} — **{r[1]}** 🪙\n'
 
@@ -818,7 +1042,7 @@ def callback_handler(call):
             parse_mode='Markdown',
         )
 
-    # --- 🎁 ПРОМОКОД ---
+    # --- 🟩 ПРОМОКОД ---
     elif call.data == 'menu_promo':
         msg = bot.send_message(
             call.message.chat.id, '🔑 Введите ваш промокод:'
@@ -846,7 +1070,7 @@ def callback_handler(call):
             InlineKeyboardButton(
                 '👹 Сбросить Босса', callback_data='adm_reset_boss'
             ),
-            InlineKeyboardButton('⬅️ Назад', callback_data='menu_main'),
+            InlineKeyboardButton('⬛ ⬅️ Назад', callback_data='menu_main'),
         )
         bot.edit_message_text(
             '👑 **УПРАВЛЕНИЕ БОТОМ (АДМИНКА)**',
@@ -975,7 +1199,6 @@ def process_use_promo(message):
         conn.close()
         return
 
-    # Зачисление
     reward = row[1]
     used_users.append(message.from_user.id)
     c.execute(
